@@ -5,6 +5,14 @@ from enum import Enum, auto
 import argparse
 from pathlib import Path
 
+RED   = "\033[1;31m"  
+BLUE  = "\033[1;34m"
+CYAN  = "\033[1;36m"
+GREEN = "\033[0;32m"
+RESET = "\033[0;0m"
+BOLD    = "\033[;1m"
+REVERSE = "\033[;7m"
+
 class LanguageId(Enum):
     UNKNOWN = auto()
     ENGLISH = auto()
@@ -40,18 +48,21 @@ class Language:
         'eng': LanguageId.ENGLISH,
         'fre': LanguageId.FRENCH,
         'jpn': LanguageId.JAPANESE,
+        'kor': LanguageId.KOREAN,
         }
     language_name_to_id = {
         'Unknown': LanguageId.UNKNOWN,
         'English': LanguageId.ENGLISH,
         'French': LanguageId.FRENCH,
         'Japanese': LanguageId.JAPANESE,
+        'Korean': LanguageId.KOREAN,
         }
     language_id_to_iso = {
         LanguageId.UNKNOWN: 'und',
         LanguageId.ENGLISH: 'eng',
         LanguageId.FRENCH: 'fre',
         LanguageId.JAPANESE: 'jpn',
+        LanguageId.KOREAN: 'kor',
         }
 
     @classmethod
@@ -67,10 +78,38 @@ def execute_command(command):
     :param list(str) command:
     :rtype int,str,str: 
     """
-    completed_process = subprocess.run(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-    assert completed_process.returncode == 0
+    completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
+    return completed_process
+
+def to_language_iso(iso_or_pseudo_iso):
+    language_iso = iso_or_pseudo_iso
+    if iso_or_pseudo_iso == 'fra':
+        language_iso = 'fre'
+    return language_iso
+
+
+def _parse_audio_streams(ffprobe_stderr):
+    audio_stream_defs = []
+    for line in ffprobe_stderr.split(b'\n'):
+        # https://exiftool.org/TagNames/RIFF.html
+        try:
+            line_as_str = str(line, encoding='utf-8')
+        except UnicodeDecodeError as e:  # pylint: disable=unused-variable
+            line_as_str = str(line, encoding='latin_1')
+        # print('stderr : %s' % line_as_str)
+        # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
+        #  Stream #0:0(eng): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, smpte170m/smpte170m/bt709), 662x330 [SAR 32:27 DAR 10592:4455], 700 kb/s, 23.98 fps, 120 tbr, 48k tbn, 47.95 tbc (default)
+        match = re.match(r'^\s*Stream #([0-9]+):([0-9]+)\(([a-z]+)\): Audio:\s', line_as_str)
+        if match:
+            audio_stream_def = {}
+            audio_stream_def['majorid'] = match.groups()[0]
+            audio_stream_def['minorid'] = match.groups()[1]
+            audio_stream_def['language_iso'] = to_language_iso(match.groups()[2])
+            audio_stream_defs.append(audio_stream_def)
+
+    return audio_stream_defs
 
 def get_movie_track_languages(movie_file_path):
     """
@@ -79,33 +118,46 @@ def get_movie_track_languages(movie_file_path):
     """
     assert isinstance(movie_file_path, Path)
     languages = []
-    print(type(movie_file_path))
-    completed_process = subprocess.run(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    completed_process = execute_command(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'])
     assert completed_process.returncode == 0
+    print('coucou')
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
+    ffprobe_stderr = completed_process.stderr
+    audio_stream_defs = _parse_audio_streams(ffprobe_stderr)
+    print(audio_stream_defs)
 
-    for line in completed_process.stderr.split('\n'):
-        # https://exiftool.org/TagNames/RIFF.html
-        # print('stderr' + line)
-        # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
-        match = re.match(r'^\s*IAS1\s+:\s*([a-zA-Z]+)\s*$', line)
-        if match:
-            language_iso = match.groups()[0]
-            if language_iso in Language.names():
-                languages.append(Language(language_name=language_iso))
-            if language_iso in Language.isos():
-                languages.append(Language(language_iso=language_iso))
-            # print(language)
-        # print(match)
+    for audio_stream_def in audio_stream_defs:
+        languages.append(Language(language_iso=audio_stream_def['language_iso']))
 
-    for line in completed_process.stdout.split('\n'):
-        #print('stdout' + line)
-        match = re.match(r'^\s*TAG\s*:\s*language=([a-zA-Z]+)\s*$', line)
-        if match:
-            language_iso = match.groups()[0]
-            languages.append(Language(language_iso=language_iso))
-            # print(language)
+    if len(audio_stream_defs) == 0:
+
+        for line in ffprobe_stderr.split(b'\n'):
+            # https://exiftool.org/TagNames/RIFF.html
+            # print('stderr' + line)
+            # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
+            try:
+                line_as_str = str(line, encoding='utf-8')
+            except UnicodeDecodeError as e:  # pylint: disable=unused-variable
+                line_as_str = str(line, encoding='latin_1')
+            match = re.match(r'^\s*IAS1\s+:\s*([a-zA-Z]+)\s*$', line_as_str)
+            if match:
+                language_iso = match.groups()[0]
+                if language_iso in Language.names():
+                    languages.append(Language(language_name=language_iso))
+                if language_iso in Language.isos():
+                    languages.append(Language(language_iso=language_iso))
+                # print(language)
+            # print(match)
+
+
+        # for line in completed_process.stdout.split(b'\n'):
+        #     # print(b'stdout' + line)
+        #     match = re.match(r'^\s*TAG\s*:\s*language=([a-zA-Z]+)\s*$', str(line, encoding='utf-8'))
+        #     if match:
+        #         language_iso = to_language_iso(match.groups()[0])
+        #         languages.append(Language(language_iso=language_iso))
+        #         # print(language)
     return languages
 
 
@@ -148,12 +200,12 @@ def set_movie_track_language(movie_file_path, language):
 
 
         # https://exiftool.org/TagNames/RIFF.html
-        completed_process = subprocess.run(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata', 'IAS1=%s' % language.iso, output_file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        completed_process = execute_command(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata', 'IAS1=%s' % language.iso, output_file_path])
         assert completed_process.returncode == 0, completed_process.stderr
     else:
         print('not avi')
         # ffmpeg -i input.mp4 -map 0 -codec copy -metadata:s:a:0 language=eng -metadata:s:a:1 language=rus output.mp4
-        completed_process = subprocess.run(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata:s:a:0', 'language=%s' % language.iso, output_file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        completed_process = execute_command(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata:s:a:0', 'language=%s' % language.iso, output_file_path])
         assert completed_process.returncode == 0, completed_process.stderr
 
 
@@ -170,7 +222,7 @@ if __name__ == '__main__':
     show_audio_language_subparser = subparsers.add_parser("show-audio-languages", help="shows the audio track languages of the given video files")
     show_audio_language_subparser.add_argument('movie_file_paths', nargs='+')
 
-    set_audio_language_subparser = subparsers.add_parser("set-audio-language", help="sets the audio track languages of the given video files")
+    set_audio_language_subparser = subparsers.add_parser("set-audio-language", help="sets the audio track language of the given video file")
     set_audio_language_subparser.add_argument('--language', required=True, choices=Language.language_iso_to_id.keys())
     set_audio_language_subparser.add_argument('--movie-file-path', required=True)
 
@@ -179,22 +231,13 @@ if __name__ == '__main__':
 
     if namespace.command == 'show-audio-languages':
         for movie_file_path in namespace.movie_file_paths:
-            print(movie_file_path)
+            # print(movie_file_path)
             languages = get_movie_track_languages(Path(movie_file_path))
-            print(Path(movie_file_path), languages)
+            print(Path(movie_file_path), BLUE, languages, RESET)
 
     if namespace.command == 'set-audio-language':
         set_movie_track_language(Path(namespace.movie_file_path), Language(language_iso=namespace.language))
 
-    if False:
-        # parser.add_argument('command', help='')
-        parser.add_argument('--show-audio-languages', nargs='+', help='movie files paths')
-        parser.add_argument('--set-audio-language', nargs='+', help='movie files paths')
-        namespace = parser.parse_args()
-        print(namespace)
-        for movie_file_path in namespace.show_audio_languages:
-            languages = get_movie_track_languages(movie_file_path)
-            print(movie_file_path, languages)
 
         # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Godzilla (Gojira).avi')
         # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Seven Samurai [Jap,EngSub].avi')
