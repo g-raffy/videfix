@@ -1,0 +1,202 @@
+# utf-8
+import subprocess
+import re
+from enum import Enum, auto
+import argparse
+from pathlib import Path
+
+class LanguageId(Enum):
+    UNKNOWN = auto()
+    ENGLISH = auto()
+    FRENCH = auto()
+    JAPANESE = auto()
+    KOREAN = auto()
+
+class Language:
+
+    def __init__(self, language_id=None, language_name=None, language_iso=None):
+        if language_id is not None:
+            assert language_name is None and language_iso is None
+            self.language_id = language_id
+        if language_name is not None:
+            assert language_id is None and language_iso is None
+            self.language_id = Language.language_name_to_id[language_name]
+        if language_iso is not None:
+            assert language_id is None and language_name is None
+            self.language_id = Language.language_iso_to_id[language_iso]
+
+    def __str__(self):
+        return Language.language_id_to_iso[self.language_id]
+
+    def __repr__(self):
+        return Language.language_id_to_iso[self.language_id]
+    
+    @property
+    def iso(self):
+        return Language.language_id_to_iso[self.language_id]
+
+    language_iso_to_id = {
+        'und': LanguageId.UNKNOWN,
+        'eng': LanguageId.ENGLISH,
+        'fre': LanguageId.FRENCH,
+        'jpn': LanguageId.JAPANESE,
+        }
+    language_name_to_id = {
+        'Unknown': LanguageId.UNKNOWN,
+        'English': LanguageId.ENGLISH,
+        'French': LanguageId.FRENCH,
+        'Japanese': LanguageId.JAPANESE,
+        }
+    language_id_to_iso = {
+        LanguageId.UNKNOWN: 'und',
+        LanguageId.ENGLISH: 'eng',
+        LanguageId.FRENCH: 'fre',
+        LanguageId.JAPANESE: 'jpn',
+        }
+
+    @classmethod
+    def names(cls):
+        return Language.language_name_to_id.keys()
+
+    @classmethod
+    def isos(cls):
+        return Language.language_iso_to_id.keys()
+
+def execute_command(command):
+    """
+    :param list(str) command:
+    :rtype int,str,str: 
+    """
+    completed_process = subprocess.run(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    assert completed_process.returncode == 0
+    #print(completed_process.stdout)
+    #print(type(completed_process.stdout))
+
+def get_movie_track_languages(movie_file_path):
+    """
+    :param Path movie_file_path:
+    :rtype list(Language):
+    """
+    assert isinstance(movie_file_path, Path)
+    languages = []
+    print(type(movie_file_path))
+    completed_process = subprocess.run(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    assert completed_process.returncode == 0
+    #print(completed_process.stdout)
+    #print(type(completed_process.stdout))
+
+    for line in completed_process.stderr.split('\n'):
+        # https://exiftool.org/TagNames/RIFF.html
+        # print('stderr' + line)
+        # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
+        match = re.match(r'^\s*IAS1\s+:\s*([a-zA-Z]+)\s*$', line)
+        if match:
+            language_iso = match.groups()[0]
+            if language_iso in Language.names():
+                languages.append(Language(language_name=language_iso))
+            if language_iso in Language.isos():
+                languages.append(Language(language_iso=language_iso))
+            # print(language)
+        # print(match)
+
+    for line in completed_process.stdout.split('\n'):
+        #print('stdout' + line)
+        match = re.match(r'^\s*TAG\s*:\s*language=([a-zA-Z]+)\s*$', line)
+        if match:
+            language_iso = match.groups()[0]
+            languages.append(Language(language_iso=language_iso))
+            # print(language)
+    return languages
+
+
+class MovieContainerType(Enum):
+    AVI = auto()
+    MP4 = auto()
+    MKV = auto()
+
+
+def get_movie_container_type(movie_file_path):
+    suffix = movie_file_path.suffix
+    if suffix in ['.avi']:
+        return MovieContainerType.AVI
+    if suffix in ['.mp4']:
+        return MovieContainerType.MP4
+    if suffix in ['.mkv']:
+        return MovieContainerType.MKV
+    assert False, 'unexpected suffix : %s' % suffix
+    
+
+def set_movie_track_language(movie_file_path, language):
+    """
+    :param Path movie_file_path:
+    :param Language language:
+    """
+    assert isinstance(movie_file_path, Path)
+    # ffmpeg -y -i /media/graffy/raffychap2a/Video/Movies/1950\ -\ Cendrillon\ \[fr\].avi -c:a copy -metadata:s:a:0 language=fre output.avi
+    output_file_path = Path('~/toto%s' % movie_file_path.suffix).expanduser()
+    if get_movie_container_type(movie_file_path) == MovieContainerType.AVI:
+        print('avi')
+        # find a way to set riff IAS1 to the language
+        # https://superuser.com/questions/783895/ffmpeg-edit-avi-metadata-and-audio-track-naming
+        #     Took quite a long time for me to figure this out. I'm posting it here, because even after 3 years this thread is one of the first hits in google search: AVI (more specific: RIFF) does support language names but in opposite to mkv, the metadata is not stored in the stream but in the header using tags IAS1-9 for up to 9 different audio streams.
+        #  
+        #     ffmpeg -i input.avi -map 0 -codec copy -metadata IAS1=eng -metadata IAS2=ger output.avi
+        #
+        #     VLC ist pretty tolerant. If you enter ISO code "ger", VLC translates it to "Deutsch", if you enter "MyLang" instead, VLC displays "MyLang". Other software like Kodi needs the the correct ISO code. It would read "MyL" only and then display the language as unknown.
+        #
+        #     However, please be aware that ffmpeg does not just add the language but also changes other metadata. For example, audio interleave and preload data are different in output.avi, no idea if this is good or might result in audio out of sync. Check with MediaInfo or similar.
+
+
+        # https://exiftool.org/TagNames/RIFF.html
+        completed_process = subprocess.run(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata', 'IAS1=%s' % language.iso, output_file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        assert completed_process.returncode == 0, completed_process.stderr
+    else:
+        print('not avi')
+        # ffmpeg -i input.mp4 -map 0 -codec copy -metadata:s:a:0 language=eng -metadata:s:a:1 language=rus output.mp4
+        completed_process = subprocess.run(['ffmpeg', '-y', '-i', str(movie_file_path.expanduser(), 'utf-8'), '-c:v', 'copy', '-c:a', 'copy', '-metadata:s:a:0', 'language=%s' % language.iso, output_file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        assert completed_process.returncode == 0, completed_process.stderr
+
+
+def fix_movie_file(movie_file_path):
+    languages = get_movie_track_languages(movie_file_path)
+    print(languages)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='edit metadata inside movie files')
+    subparsers = parser.add_subparsers()
+    subparsers.required = True
+    subparsers.dest = 'command'
+
+    show_audio_language_subparser = subparsers.add_parser("show-audio-languages", help="shows the audio track languages of the given video files")
+    show_audio_language_subparser.add_argument('movie_file_paths', nargs='+')
+
+    set_audio_language_subparser = subparsers.add_parser("set-audio-language", help="sets the audio track languages of the given video files")
+    set_audio_language_subparser.add_argument('--language', required=True, choices=Language.language_iso_to_id.keys())
+    set_audio_language_subparser.add_argument('--movie-file-path', required=True)
+
+    namespace = parser.parse_args()
+    # print(namespace)
+
+    if namespace.command == 'show-audio-languages':
+        for movie_file_path in namespace.movie_file_paths:
+            print(movie_file_path)
+            languages = get_movie_track_languages(Path(movie_file_path))
+            print(Path(movie_file_path), languages)
+
+    if namespace.command == 'set-audio-language':
+        set_movie_track_language(Path(namespace.movie_file_path), Language(language_iso=namespace.language))
+
+    if False:
+        # parser.add_argument('command', help='')
+        parser.add_argument('--show-audio-languages', nargs='+', help='movie files paths')
+        parser.add_argument('--set-audio-language', nargs='+', help='movie files paths')
+        namespace = parser.parse_args()
+        print(namespace)
+        for movie_file_path in namespace.show_audio_languages:
+            languages = get_movie_track_languages(movie_file_path)
+            print(movie_file_path, languages)
+
+        # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Godzilla (Gojira).avi')
+        # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Seven Samurai [Jap,EngSub].avi')
+        # fix_movie_file('/home/graffy/2018 - I want to eat your pancreas [jp].mp4')
+        # fix_movie_file('/home/graffy/output.avi')
