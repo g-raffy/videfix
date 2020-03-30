@@ -91,16 +91,22 @@ def to_language_iso(iso_or_pseudo_iso):
 
 
 def _parse_audio_streams(ffprobe_stderr):
+    """ gets audio track information from the following lines of the stderr output of ffprobe
+        
+        Stream #0:0(eng): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, smpte170m/smpte170m/bt709), 662x330 [SAR 32:27 DAR 10592:4455], 700 kb/s, 23.98 fps, 120 tbr, 48k tbn, 47.95 tbc (default)
+
+        note: these lines are not present for avi movies.
+
+    :param str ffprobe_stderr: standard error stream of ffprobe command
+    """
     audio_stream_defs = []
     for line in ffprobe_stderr.split(b'\n'):
-        # https://exiftool.org/TagNames/RIFF.html
+        #
         try:
             line_as_str = str(line, encoding='utf-8')
         except UnicodeDecodeError as e:  # pylint: disable=unused-variable
             line_as_str = str(line, encoding='latin_1')
         # print('stderr : %s' % line_as_str)
-        # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
-        #  Stream #0:0(eng): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, smpte170m/smpte170m/bt709), 662x330 [SAR 32:27 DAR 10592:4455], 700 kb/s, 23.98 fps, 120 tbr, 48k tbn, 47.95 tbc (default)
         match = re.match(r'^\s*Stream #([0-9]+):([0-9]+)\(([a-z]+)\): Audio:\s', line_as_str)
         if match:
             audio_stream_def = {}
@@ -120,20 +126,20 @@ def get_movie_track_languages(movie_file_path):
     languages = []
     completed_process = execute_command(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'])
     assert completed_process.returncode == 0
-    print('coucou')
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
     ffprobe_stderr = completed_process.stderr
     audio_stream_defs = _parse_audio_streams(ffprobe_stderr)
-    print(audio_stream_defs)
+    # print(audio_stream_defs)
 
     for audio_stream_def in audio_stream_defs:
         languages.append(Language(language_iso=audio_stream_def['language_iso']))
-
     if len(audio_stream_defs) == 0:
+        # avi movie files can't store audio track language information in the audiostreams themselves. Instead, these information is stored as riff tags in the header of the file.
+        # search for audiotrack language information from header (in IAS<n> riff tags)
+        # https://exiftool.org/TagNames/RIFF.html
 
         for line in ffprobe_stderr.split(b'\n'):
-            # https://exiftool.org/TagNames/RIFF.html
             # print('stderr' + line)
             # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
             try:
