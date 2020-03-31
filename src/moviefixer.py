@@ -19,59 +19,96 @@ class LanguageId(Enum):
     FRENCH = auto()
     JAPANESE = auto()
     KOREAN = auto()
+    SPANISH = auto()
+
+class LanguageDef:
+
+    def __init__(self, language_id, language_name, language_iso):
+        """
+        :param LanguageId language_id:
+        :param str language_name:
+        :param str language_iso: iso 639-2/T
+        """
+        self.language_id = language_id
+        self.language_name = language_name
+        self.language_iso = language_iso
+
+class LanguageDefs:
+
+    def __init__(self):
+        self.language_defs = {}
+        self.register_language_def(LanguageDef(LanguageId.UNKNOWN, 'Unknown', 'und'))
+        self.register_language_def(LanguageDef(LanguageId.ENGLISH, 'English', 'eng'))
+        self.register_language_def(LanguageDef(LanguageId.FRENCH, 'Francais', 'fra'))
+        self.register_language_def(LanguageDef(LanguageId.JAPANESE, 'Japanese', 'jpn'))
+        self.register_language_def(LanguageDef(LanguageId.KOREAN, 'Korean', 'kor'))
+        self.register_language_def(LanguageDef(LanguageId.SPANISH, 'Espanol', 'spa'))
+    
+    def register_language_def(self, language_def):
+        """
+        :param LanguageDef language_def:
+        """
+        self.language_defs[language_def.language_id] = language_def
+
+    def language_iso_to_id(self, language_iso):
+        for language_def in self.language_defs.values():
+            if language_def.language_iso == language_iso:
+                return language_def.language_id
+
+    def language_name_to_id(self, language_name):
+        for language_def in self.language_defs.values():
+            if language_def.language_name == language_name:
+                return language_def.language_id
+
+    def language_id_to_iso(self, language_id):
+        return self.language_defs[language_id].language_iso
+
+    def isos(self):
+        return [language_def.language_iso for language_def in self.language_defs.values()]
+
+    def names(self):
+        return [language_def.language_name for language_def in self.language_defs.values()]
+
+LANGUAGE_DEFS = LanguageDefs()
 
 class Language:
+    # we use iso 639-2/T codes https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
 
     def __init__(self, language_id=None, language_name=None, language_iso=None):
+        global LANGUAGE_DEFS
         if language_id is not None:
             assert language_name is None and language_iso is None
             self.language_id = language_id
         if language_name is not None:
             assert language_id is None and language_iso is None
-            self.language_id = Language.language_name_to_id[language_name]
+            self.language_id = LANGUAGE_DEFS.language_name_to_id(language_name)
         if language_iso is not None:
             assert language_id is None and language_name is None
-            self.language_id = Language.language_iso_to_id[language_iso]
+            self.language_id = LANGUAGE_DEFS.language_iso_to_id(language_iso)
 
     def __str__(self):
-        return Language.language_id_to_iso[self.language_id]
+        global LANGUAGE_DEFS
+        return LANGUAGE_DEFS.language_id_to_iso(self.language_id)
 
     def __repr__(self):
-        return Language.language_id_to_iso[self.language_id]
+        global LANGUAGE_DEFS
+        return LANGUAGE_DEFS.language_id_to_iso(self.language_id)
     
     @property
     def iso(self):
-        return Language.language_id_to_iso[self.language_id]
-
-    language_iso_to_id = {
-        'und': LanguageId.UNKNOWN,
-        'eng': LanguageId.ENGLISH,
-        'fre': LanguageId.FRENCH,
-        'jpn': LanguageId.JAPANESE,
-        'kor': LanguageId.KOREAN,
-        }
-    language_name_to_id = {
-        'Unknown': LanguageId.UNKNOWN,
-        'English': LanguageId.ENGLISH,
-        'French': LanguageId.FRENCH,
-        'Japanese': LanguageId.JAPANESE,
-        'Korean': LanguageId.KOREAN,
-        }
-    language_id_to_iso = {
-        LanguageId.UNKNOWN: 'und',
-        LanguageId.ENGLISH: 'eng',
-        LanguageId.FRENCH: 'fre',
-        LanguageId.JAPANESE: 'jpn',
-        LanguageId.KOREAN: 'kor',
-        }
+        global LANGUAGE_DEFS
+        return LANGUAGE_DEFS.language_id_to_iso(self.language_id)
 
     @classmethod
     def names(cls):
-        return Language.language_name_to_id.keys()
+        global LANGUAGE_DEFS
+        return LANGUAGE_DEFS.names()
 
     @classmethod
     def isos(cls):
-        return Language.language_iso_to_id.keys()
+        global LANGUAGE_DEFS
+        return LANGUAGE_DEFS.isos()
+
 
 def execute_command(command):
     """
@@ -83,14 +120,25 @@ def execute_command(command):
     #print(type(completed_process.stdout))
     return completed_process
 
-def to_language_iso(iso_or_pseudo_iso):
+def check_language_iso(iso_or_pseudo_iso):
     language_iso = iso_or_pseudo_iso
-    if iso_or_pseudo_iso == 'fra':
-        language_iso = 'fre'
+    if iso_or_pseudo_iso == 'fre':
+        language_iso = 'fra'
+    assert language_iso in Language.isos(), 'unexpected language iso : %s' % language_iso
+    if iso_or_pseudo_iso != language_iso:
+        print(RED, 'warning : %s is not an iso 639-2/T language code; replaced with %s' % (iso_or_pseudo_iso, language_iso), RESET)
     return language_iso
 
+def check_language_name(name_or_pseudo_name):
+    language_name = name_or_pseudo_name
+    #if language_name == 'Francais':
+    #    language_name = 'French'
+    assert language_name in Language.names(), 'unexpected language name : %s' % language_name
+    if name_or_pseudo_name != language_name:
+        print(RED, 'warning : %s is not an expected language name; replaced with %s' % (name_or_pseudo_name, language_name), RESET)
+    return language_name
 
-def _parse_audio_streams(ffprobe_stderr):
+def _find_audio_defs_in_streams(ffprobe_stderr):
     """ gets audio track information from the following lines of the stderr output of ffprobe
         
         Stream #0:0(eng): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, smpte170m/smpte170m/bt709), 662x330 [SAR 32:27 DAR 10592:4455], 700 kb/s, 23.98 fps, 120 tbr, 48k tbn, 47.95 tbc (default)
@@ -112,9 +160,34 @@ def _parse_audio_streams(ffprobe_stderr):
             audio_stream_def = {}
             audio_stream_def['majorid'] = match.groups()[0]
             audio_stream_def['minorid'] = match.groups()[1]
-            audio_stream_def['language_iso'] = to_language_iso(match.groups()[2])
+            audio_stream_def['language_iso'] = check_language_iso(match.groups()[2])
             audio_stream_defs.append(audio_stream_def)
 
+    return audio_stream_defs
+
+def _find_audio_defs_in_ias_tags(ffprobe_stderr):
+    # avi movie files can't store audio track language information in the audiostreams themselves. Instead, these information is stored as riff tags in the header of the file.
+    # search for audiotrack language information from header (in IAS<n> riff tags)
+    # https://exiftool.org/TagNames/RIFF.html
+    audio_stream_defs = []
+    for line in ffprobe_stderr.split(b'\n'):
+        # print('stderr' + line)
+        # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
+        try:
+            line_as_str = str(line, encoding='utf-8')
+        except UnicodeDecodeError as e:  # pylint: disable=unused-variable
+            line_as_str = str(line, encoding='latin_1')
+        #     IAS1            : English
+        #     IAS1            : Japanese
+        #     IAS1            : Francais
+        match = re.match(r'^\s*IAS([0-9]+)\s+:\s*([a-zA-Z]+)\s*$', line_as_str)
+        if match:
+            audio_stream_def = {}
+            audio_stream_def['ausio_track_id'] = match.groups()[0]
+            language_name = check_language_name(match.groups()[1])
+            language_iso = Language(language_name=language_name).iso
+            audio_stream_def['language_iso'] = language_iso
+            audio_stream_defs.append(audio_stream_def)
     return audio_stream_defs
 
 def get_movie_track_languages(movie_file_path):
@@ -123,47 +196,24 @@ def get_movie_track_languages(movie_file_path):
     :rtype list(Language):
     """
     assert isinstance(movie_file_path, Path)
+    # print(movie_file_path)
     languages = []
     completed_process = execute_command(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'])
-    assert completed_process.returncode == 0
-    #print(completed_process.stdout)
-    #print(type(completed_process.stdout))
+    assert completed_process.returncode == 0, completed_process.stderr
     ffprobe_stderr = completed_process.stderr
-    audio_stream_defs = _parse_audio_streams(ffprobe_stderr)
-    # print(audio_stream_defs)
+    streams_language_defs = _find_audio_defs_in_streams(ffprobe_stderr)
+    header_language_defs = _find_audio_defs_in_ias_tags(ffprobe_stderr)
 
-    for audio_stream_def in audio_stream_defs:
+    for audio_stream_def in streams_language_defs:
         languages.append(Language(language_iso=audio_stream_def['language_iso']))
-    if len(audio_stream_defs) == 0:
-        # avi movie files can't store audio track language information in the audiostreams themselves. Instead, these information is stored as riff tags in the header of the file.
-        # search for audiotrack language information from header (in IAS<n> riff tags)
-        # https://exiftool.org/TagNames/RIFF.html
 
-        for line in ffprobe_stderr.split(b'\n'):
-            # print('stderr' + line)
-            # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
-            try:
-                line_as_str = str(line, encoding='utf-8')
-            except UnicodeDecodeError as e:  # pylint: disable=unused-variable
-                line_as_str = str(line, encoding='latin_1')
-            match = re.match(r'^\s*IAS1\s+:\s*([a-zA-Z]+)\s*$', line_as_str)
-            if match:
-                language_iso = match.groups()[0]
-                if language_iso in Language.names():
-                    languages.append(Language(language_name=language_iso))
-                if language_iso in Language.isos():
-                    languages.append(Language(language_iso=language_iso))
-                # print(language)
-            # print(match)
+    if len(streams_language_defs) == 0:
+        for audio_stream_def in header_language_defs:
+            languages.append(Language(language_iso=audio_stream_def['language_iso']))
+    else:
+        # check that the audio stream languages in the headers match the audio stream languages in the streams
+        assert len(header_language_defs) == 0
 
-
-        # for line in completed_process.stdout.split(b'\n'):
-        #     # print(b'stdout' + line)
-        #     match = re.match(r'^\s*TAG\s*:\s*language=([a-zA-Z]+)\s*$', str(line, encoding='utf-8'))
-        #     if match:
-        #         language_iso = to_language_iso(match.groups()[0])
-        #         languages.append(Language(language_iso=language_iso))
-        #         # print(language)
     return languages
 
 
@@ -226,17 +276,17 @@ if __name__ == '__main__':
     subparsers.dest = 'command'
 
     show_audio_language_subparser = subparsers.add_parser("show-audio-languages", help="shows the audio track languages of the given video files")
-    show_audio_language_subparser.add_argument('movie_file_paths', nargs='+')
+    show_audio_language_subparser.add_argument('movie_file_path', nargs='+')
 
     set_audio_language_subparser = subparsers.add_parser("set-audio-language", help="sets the audio track language of the given video file")
-    set_audio_language_subparser.add_argument('--language', required=True, choices=Language.language_iso_to_id.keys())
+    set_audio_language_subparser.add_argument('--language', required=True, choices=LANGUAGE_DEFS.isos())
     set_audio_language_subparser.add_argument('--movie-file-path', required=True)
 
     namespace = parser.parse_args()
     # print(namespace)
 
     if namespace.command == 'show-audio-languages':
-        for movie_file_path in namespace.movie_file_paths:
+        for movie_file_path in namespace.movie_file_path:
             # print(movie_file_path)
             languages = get_movie_track_languages(Path(movie_file_path))
             print(Path(movie_file_path), BLUE, languages, RESET)
