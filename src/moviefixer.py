@@ -1,4 +1,5 @@
-# utf-8
+#!/usr/bin/env python3
+# # utf-8
 import subprocess
 import re
 from enum import Enum, auto
@@ -122,11 +123,16 @@ def execute_command(command):
 
 def check_language_iso(iso_or_pseudo_iso):
     language_iso = iso_or_pseudo_iso
+    norm = 'iso 639-2/T'
     if iso_or_pseudo_iso == 'fre':
         language_iso = 'fra'
+        norm = 'iso 639-2/B'
     assert language_iso in Language.isos(), 'unexpected language iso : %s' % language_iso
-    if iso_or_pseudo_iso != language_iso:
-        print(RED, 'warning : %s is not an iso 639-2/T language code; replaced with %s' % (iso_or_pseudo_iso, language_iso), RESET)
+    # https://medium.com/av-transcode/how-to-add-multiple-audio-tracks-to-a-single-video-using-ffmpeg-open-source-tool-27bff8cca30 :
+    #   FFmpeg expects the language can be specified as an ISO 639–2/T or ISO 639–2/B (3 letters) code. ISO 639 is a set of international standards that lists shortcodes for language names.
+    allowed_norms = ['iso 639-2/T', 'iso 639-2/B']  # not sure which norms are actually allowed
+    if norm not in allowed_norms:
+        print(RED, 'warning : %s is not in the norm %s, which is not the allowed norms %s language code; replaced with %s' % (iso_or_pseudo_iso, norm, allowed_norms, language_iso), RESET)
     return language_iso
 
 def check_language_name(name_or_pseudo_name):
@@ -138,38 +144,14 @@ def check_language_name(name_or_pseudo_name):
         print(RED, 'warning : %s is not an expected language name; replaced with %s' % (name_or_pseudo_name, language_name), RESET)
     return language_name
 
-def _find_audio_defs_in_streams(ffprobe_stderr):
-    """ gets audio track information from the following lines of the stderr output of ffprobe
-        
-        Stream #0:0(eng): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, smpte170m/smpte170m/bt709), 662x330 [SAR 32:27 DAR 10592:4455], 700 kb/s, 23.98 fps, 120 tbr, 48k tbn, 47.95 tbc (default)
 
-        note: these lines are not present for avi movies.
-
-    :param str ffprobe_stderr: standard error stream of ffprobe command
-    """
-    audio_stream_defs = []
-    for line in ffprobe_stderr.split(b'\n'):
-        #
-        try:
-            line_as_str = str(line, encoding='utf-8')
-        except UnicodeDecodeError as e:  # pylint: disable=unused-variable
-            line_as_str = str(line, encoding='latin_1')
-        # print('stderr : %s' % line_as_str)
-        match = re.match(r'^\s*Stream #([0-9]+):([0-9]+)\(([a-z]+)\): Audio:\s', line_as_str)
-        if match:
-            audio_stream_def = {}
-            audio_stream_def['majorid'] = match.groups()[0]
-            audio_stream_def['minorid'] = match.groups()[1]
-            audio_stream_def['language_iso'] = check_language_iso(match.groups()[2])
-            audio_stream_defs.append(audio_stream_def)
-
-    return audio_stream_defs
-
-def _find_audio_defs_in_ias_tags(ffprobe_stderr):
+def _find_audio_tracks_defs(ffprobe_stderr):
     # avi movie files can't store audio track language information in the audiostreams themselves. Instead, these information is stored as riff tags in the header of the file.
     # search for audiotrack language information from header (in IAS<n> riff tags)
     # https://exiftool.org/TagNames/RIFF.html
-    audio_stream_defs = []
+    stream_language_defs = {}
+    header_language_defs = {}
+
     for line in ffprobe_stderr.split(b'\n'):
         # print('stderr' + line)
         # match = re.match('^\s*IAS1\s+:\s*[a-zA-Z]+\s+$', line)
@@ -183,12 +165,75 @@ def _find_audio_defs_in_ias_tags(ffprobe_stderr):
         match = re.match(r'^\s*IAS([0-9]+)\s+:\s*([a-zA-Z]+)\s*$', line_as_str)
         if match:
             audio_stream_def = {}
-            audio_stream_def['ausio_track_id'] = match.groups()[0]
+            track_index = int(match.groups()[0]) - 1
+            assert track_index >= 0
+            audio_stream_def['audio_track_id'] = track_index
             language_name = check_language_name(match.groups()[1])
             language_iso = Language(language_name=language_name).iso
             audio_stream_def['language_iso'] = language_iso
-            audio_stream_defs.append(audio_stream_def)
-    return audio_stream_defs
+            audio_stream_def['from_header'] = 'IAS%s:%s' % (match.groups()[0], match.groups()[1])
+            # if match.groups()[1] not in ['und']:
+            #    print(match.groups()[1])
+            header_language_defs[track_index] = audio_stream_def
+
+        # for avi files :
+        # Stream #0:1: Audio: mp3 (U[0][0][0] / 0x0055), 48000 Hz, stereo, s16p, 138 kb/s
+
+        # for mp4 files :
+        # Stream #0:0(und): Video: mpeg4 (mp4v / 0x7634706D), yuv420p, 576x432 [SAR 1:1 DAR 4:3], 1002 kb/s, 23.98 fps, 23.98 tbr, 24k tbn, 2 tbc (default)
+        # Metadata:
+        #   handler_name    : VideoHandler
+        # Stream #0:1(jpn): Audio: mp3 (mp4a / 0x6134706D), 44100 Hz, mono, s16p, 96 kb/s (default)
+        # Metadata:
+        #   handler_name    : SoundHandler
+
+        # print(line_as_str)
+        match = re.match(r'^\s*Stream #([0-9]+):([0-9]+)([^\:]*): Audio:\s', line_as_str)
+        if match:
+            audio_stream_def = {}
+            audio_stream_def['majorid'] = match.groups()[0]
+            audio_stream_def['minorid'] = match.groups()[1]
+            stream_id = '%s:%s' % (audio_stream_def['majorid'], audio_stream_def['minorid'])
+            audio_stream_def['stream_id'] = stream_id
+
+            language_substring = match.groups()[2]  # it is expected to look loke "(jpn)"
+            if language_substring != '':
+                # the language of the audio stream is defined
+                match = re.match(r'^\(([a-z]+)\)$', language_substring)
+                assert match, "unexpected case : '%s' is expected to be of the form '(<language-iso-639-code>)' " % language_substring
+                
+                audio_stream_def['language_iso'] = check_language_iso(match.groups()[0])
+                audio_stream_def['from_stream'] = '%s' % match.groups()[0]
+            else:
+                audio_stream_def['language_iso'] = ''
+                audio_stream_def['from_stream'] = ''
+            stream_language_defs[stream_id] = audio_stream_def
+
+    # print(header_language_defs)
+    # print(stream_language_defs)
+    assert len(header_language_defs) <= len(stream_language_defs), "the number of audio streams found in the header (%d) don't match the actual number of audio streams (%d)" % (len(header_language_defs), len(stream_language_defs))
+
+    # sorted_track_ids = sorted([ audio_stream_def['stream_id'] for audio_stream_def in stream_language_defs.values() ])
+    sorted_track_ids = sorted(stream_language_defs.keys())
+    # print(sorted_track_ids)
+
+    for audio_stream_def in header_language_defs.values():
+        assert audio_stream_def['audio_track_id'] < len(stream_language_defs), "audio_stream_def %s 's references a non-existing stream index (%d)" % (str(audio_stream_def), audio_stream_def['audio_track_id'])
+
+
+    for track_index in range(len(sorted_track_ids)):
+        track_id = sorted_track_ids[track_index]
+        audio_stream_def = stream_language_defs[track_id]
+        if track_index in header_language_defs.keys():
+            audio_stream_def['from_header'] = header_language_defs[track_index]['from_header']
+            if audio_stream_def['language_iso'] == '':
+                audio_stream_def['language_iso'] = header_language_defs[track_index]['language_iso']
+            else:
+                assert audio_stream_def['language_iso'] == header_language_defs[track_index]['language_iso']
+        if audio_stream_def['language_iso'] == '':
+            audio_stream_def['language_iso'] = 'und'
+
+    return stream_language_defs
 
 def get_movie_track_languages(movie_file_path):
     """
@@ -201,18 +246,10 @@ def get_movie_track_languages(movie_file_path):
     completed_process = execute_command(['ffprobe', movie_file_path.expanduser(), '-show_entries', 'stream_tags=language'])
     assert completed_process.returncode == 0, completed_process.stderr
     ffprobe_stderr = completed_process.stderr
-    streams_language_defs = _find_audio_defs_in_streams(ffprobe_stderr)
-    header_language_defs = _find_audio_defs_in_ias_tags(ffprobe_stderr)
-
-    for audio_stream_def in streams_language_defs:
+    header_language_defs = _find_audio_tracks_defs(ffprobe_stderr)
+    for audio_stream_def in header_language_defs.values():
+        # print(audio_stream_def)
         languages.append(Language(language_iso=audio_stream_def['language_iso']))
-
-    if len(streams_language_defs) == 0:
-        for audio_stream_def in header_language_defs:
-            languages.append(Language(language_iso=audio_stream_def['language_iso']))
-    else:
-        # check that the audio stream languages in the headers match the audio stream languages in the streams
-        assert len(header_language_defs) == 0
 
     return languages
 
@@ -288,14 +325,13 @@ if __name__ == '__main__':
     if namespace.command == 'show-audio-languages':
         for movie_file_path in namespace.movie_file_path:
             # print(movie_file_path)
-            languages = get_movie_track_languages(Path(movie_file_path))
-            print(Path(movie_file_path), BLUE, languages, RESET)
+            try:
+                languages = get_movie_track_languages(Path(movie_file_path))
+                print(Path(movie_file_path), BLUE, languages, RESET)
+            except:
+                print(RED, "failed to process %s" % movie_file_path, RESET)
+                raise
 
     if namespace.command == 'set-audio-language':
         set_movie_track_language(Path(namespace.movie_file_path), Language(language_iso=namespace.language))
 
-
-        # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Godzilla (Gojira).avi')
-        # fix_movie_file('/home/graffy/private/moviefixer.git/1954 - Seven Samurai [Jap,EngSub].avi')
-        # fix_movie_file('/home/graffy/2018 - I want to eat your pancreas [jp].mp4')
-        # fix_movie_file('/home/graffy/output.avi')
