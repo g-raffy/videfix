@@ -126,6 +126,7 @@ def execute_command(command):
     :param list(str) command:
     :rtype int,str,str: 
     """
+    print('"'+'" "'.join([str(e) for e in command])+'"')
     completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
@@ -159,6 +160,7 @@ def _find_audio_tracks_defs(ffprobe_stderr):
     # avi movie files can't store audio track language information in the audiostreams themselves. Instead, these information is stored as riff tags in the header of the file.
     # search for audiotrack language information from header (in IAS<n> riff tags)
     # https://exiftool.org/TagNames/RIFF.html
+    # https://wiki.multimedia.cx/index.php/FFmpeg_Metadata
     stream_language_defs = {}
     header_language_defs = {}
 
@@ -306,9 +308,9 @@ def set_movie_track_languages(movie_file_path, languages):
     """
     assert isinstance(movie_file_path, Path)
 
-    audio_track_defs = get_movie_track_languages(movie_file_path)
-    print("existing track defs: ", audio_track_defs)
-    assert len(audio_track_defs) == len(languages), "unexpected number of languages in %s (%d languages are expected) " % (str(languages), len(audio_track_defs))
+    audio_track_languages = get_movie_track_languages(movie_file_path)
+    print("existing track defs: ", audio_track_languages)
+    assert len(audio_track_languages) == len(languages), "unexpected number of languages in %s (%d languages are expected) " % (str(languages), len(audio_track_languages))
 
     backup_mode = BackupMode.MODIFY_BACKUP
 
@@ -322,16 +324,21 @@ def set_movie_track_languages(movie_file_path, languages):
         dst_movie_file_path = movie_file_path
     else:
         assert False
-    # sorted_track_ids = sorted(audio_track_defs.keys())
+    # sorted_track_ids = sorted(audio_track_languages.keys())
     command = []
     command.append('ffmpeg')
     command.append('-y')
     command.append('-i')
     command.append(src_movie_file_path.expanduser())
-    command.append('-c:v')
+
+    # https://stackoverflow.com/questions/37820083/ffmpeg-not-copying-all-audio-streams
+    # FFmpeg have option to map all streams to output, you have to use option -map 0 to map all streams from input to output.
+    command.append('-c')
     command.append('copy')
-    command.append('-c:a')
-    command.append('copy')
+    command.append('-map')
+    command.append('0')
+
+
     for track_index in range(len(languages)):
         # track_id = sorted_track_ids[track_index]
         if get_movie_container_type(src_movie_file_path) == MovieContainerType.AVI:
@@ -360,6 +367,17 @@ def set_movie_track_languages(movie_file_path, languages):
     # ffmpeg -i input.mp4 -map 0 -codec copy -metadata:s:a:0 language=eng -metadata:s:a:1 language=rus output.mp4
     completed_process = execute_command(command)
     assert completed_process.returncode == 0, completed_process.stderr
+
+    check_result = True
+    if check_result:
+        dst_audio_track_languages = get_movie_track_languages(dst_movie_file_path)
+        assert [l.iso for l in languages] == [l.iso for l in dst_audio_track_languages], '%s <> %s' % (str(languages), str(dst_audio_track_languages))
+
+        src_file_size = src_movie_file_path.stat().st_size
+        dst_file_size = dst_movie_file_path.stat().st_size
+        print(src_file_size, dst_file_size)
+        assert 0.99 < float(dst_file_size)/float(src_file_size) < 1.02
+        # assert abs(src_file_size - dst_file_size) < 1000
 
 
 def fix_movie_file(movie_file_path):
