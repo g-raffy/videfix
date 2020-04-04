@@ -7,7 +7,7 @@ from enum import Enum, auto
 import argparse
 from pathlib import Path
 import datetime
- 
+import configparser
 
 RED   = "\033[1;31m"  
 BLUE  = "\033[1;34m"
@@ -127,7 +127,7 @@ def execute_command(command):
     :param list(str) command:
     :rtype int,str,str: 
     """
-    # print('"'+'" "'.join([str(e) for e in command])+'"')
+    print('"'+'" "'.join([str(e) for e in command])+'"')
     completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
@@ -290,17 +290,38 @@ def create_backup(file_path):
     """
     assert isinstance(file_path, Path)
     now_date = datetime.datetime.now()
-    backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
-    # print(backup_file_path)
+    # backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
+    backup_file_path = Path('/tmp/' + file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
+    print(backup_file_path)
     completed_process = execute_command(['rsync', '-va', str(file_path.expanduser()), str(backup_file_path.expanduser())])
     assert completed_process.returncode == 0, completed_process.stderr
 
     return backup_file_path
-    
+
+# def read_movie_metadata(src_movie_file_path):
+#     """
+#     :param Path movie_file_path:
+#     :rtype config:
+#     """
+#     ini_file_path = Path('/tmp/ffmetadata.ini')
+#     command = []
+#     command.append('ffmpeg')
+#     command.append('-i')
+#     command.append(src_movie_file_path.expanduser())
+#     command.append('-f')
+#     command.append('ffmetadata')
+#     command.append(ini_file_path.expanduser())
+#     completed_process = execute_command(command)
+#     assert completed_process.returncode == 0, completed_process.stderr
+
+#     config = configparser.ConfigParser()
+#     config.read(ini_file_path.expanduser())
+#     return config
+
 class BackupMode(Enum):
     MODIFY_ORIGINAL=auto()
     MODIFY_BACKUP=auto()
-    
+    NO_BACKUP=auto()
 
 def set_movie_track_languages(movie_file_path, languages):
     """
@@ -313,14 +334,14 @@ def set_movie_track_languages(movie_file_path, languages):
     # print("existing track defs: ", audio_track_languages)
     assert len(audio_track_languages) == len(languages), "unexpected number of languages in %s (%d languages are expected) " % (str(languages), len(audio_track_languages))
 
-    backup_mode = BackupMode.MODIFY_BACKUP
+    backup_mode = BackupMode.MODIFY_ORIGINAL
 
     movie_backup_file_path = create_backup(movie_file_path)
 
     if backup_mode == BackupMode.MODIFY_BACKUP:
         src_movie_file_path = movie_file_path
         dst_movie_file_path = movie_backup_file_path
-    elif backup_mode == BackupMode.MODIFY_ORIGINAL:
+    elif backup_mode in [BackupMode.MODIFY_ORIGINAL, BackupMode.NO_BACKUP]:
         src_movie_file_path = movie_backup_file_path
         dst_movie_file_path = movie_file_path
     else:
@@ -379,6 +400,13 @@ def set_movie_track_languages(movie_file_path, languages):
         # print(src_file_size, dst_file_size)
         assert 0.99 < float(dst_file_size)/float(src_file_size) < 1.02
         # assert abs(src_file_size - dst_file_size) < 1000
+
+        # src_metadata = read_movie_metadata(src_movie_file_path)
+        # dst_metadata = read_movie_metadata(dst_movie_file_path)
+
+    if backup_mode == BackupMode.NO_BACKUP:
+        # delete the backup
+        src_movie_file_path.unlink()
 
 
 def fix_movie_file(movie_file_path):
