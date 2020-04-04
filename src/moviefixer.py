@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # # utf-8
 import sys
+import abc
 import subprocess
 import re
 from enum import Enum, auto
@@ -290,8 +291,8 @@ def create_backup(file_path):
     """
     assert isinstance(file_path, Path)
     now_date = datetime.datetime.now()
-    # backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
-    backup_file_path = Path('/tmp/' + file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
+    backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
+    # backup_file_path = Path('/tmp/' + file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
     print(backup_file_path)
     completed_process = execute_command(['rsync', '-va', str(file_path.expanduser()), str(backup_file_path.expanduser())])
     assert completed_process.returncode == 0, completed_process.stderr
@@ -323,16 +324,83 @@ class BackupMode(Enum):
     MODIFY_BACKUP=auto()
     NO_BACKUP=auto()
 
-def set_movie_track_languages(movie_file_path, languages):
+
+class IMetadataModifier(abc.ABC):
+
+    @abc.abstractmethod
+    def movie_is_suitable(self, src_movie_file_path):
+        pass
+
+    @abc.abstractmethod
+    def get_ffmpeg_options(self, src_movie_file_path):
+        """
+        :rtype list(str): the list of ffmpeg options to perfrom the change
+        """
+        pass
+
+    @abc.abstractmethod
+    def check_modified_movie(self, dst_movie_file_path):
+        pass
+
+class TracksLanguageModifier(IMetadataModifier):
+
+    def __init__(self, languages):
+        """
+        :param list(Language) language:
+        """
+        self.languages = languages
+
+    def movie_is_suitable(self, src_movie_file_path):
+        audio_track_languages = get_movie_track_languages(src_movie_file_path)
+        # print("existing track defs: ", audio_track_languages)
+        if len(audio_track_languages) != len(self.languages):
+            return False, "unexpected number of languages in %s (%d languages are expected) " % (str(self.languages), len(audio_track_languages))
+        return True, ""
+
+    def get_ffmpeg_options(self, src_movie_file_path):
+        for track_index in range(len(self.languages)):
+            ffmpeg_options = []
+            # track_id = sorted_track_ids[track_index]
+            if get_movie_container_type(src_movie_file_path) == MovieContainerType.AVI:
+                # print('avi')
+                # find a way to set riff IAS1 to the language
+                # https://superuser.com/questions/783895/ffmpeg-edit-avi-metadata-and-audio-track-naming
+                #     Took quite a long time for me to figure this out. I'm posting it here, because even after 3 years this thread is one of the first hits in google search: AVI (more specific: RIFF) does support language names but in opposite to mkv, the metadata is not stored in the stream but in the header using tags IAS1-9 for up to 9 different audio streams.
+                #  
+                #     ffmpeg -i input.avi -map 0 -codec copy -metadata IAS1=eng -metadata IAS2=ger output.avi
+                #
+                #     VLC ist pretty tolerant. If you enter ISO code "ger", VLC translates it to "Deutsch", if you enter "MyLang" instead, VLC displays "MyLang". Other software like Kodi needs the the correct ISO code. It would read "MyL" only and then display the language as unknown.
+                #
+                #     However, please be aware that ffmpeg does not just add the language but also changes other metadata. For example, audio interleave and preload data are different in output.avi, no idea if this is good or might result in audio out of sync. Check with MediaInfo or similar.
+
+
+                # https://exiftool.org/TagNames/RIFF.html
+                ffmpeg_options.append('-metadata')
+                ffmpeg_options.append('IAS%d=%s' % (track_index + 1, self.languages[track_index].name))
+            else:
+                # print('not avi')
+                ffmpeg_options.append('-metadata:s:a:%s' % track_index)
+                ffmpeg_options.append('language=%s' % self.languages[track_index].iso)
+        return ffmpeg_options
+
+    def check_modified_movie(self, dst_movie_file_path):
+        dst_audio_track_languages = get_movie_track_languages(dst_movie_file_path)
+        if [l.iso for l in self.languages] != [l.iso for l in dst_audio_track_languages]:
+            return False, '%s <> %s' % (str(self.languages), str(dst_audio_track_languages))
+        return True, ""
+
+
+def modify_movie_metadata(movie_file_path, modifiers):
     """
     :param Path movie_file_path:
-    :param list(Language) language:
+    :param list(IMetadataModifier) modifiers:
     """
     assert isinstance(movie_file_path, Path)
 
-    audio_track_languages = get_movie_track_languages(movie_file_path)
-    # print("existing track defs: ", audio_track_languages)
-    assert len(audio_track_languages) == len(languages), "unexpected number of languages in %s (%d languages are expected) " % (str(languages), len(audio_track_languages))
+    for modifier in modifiers:
+        is_suitable, error_message = modifier.movie_is_suitable(movie_file_path)
+        if not is_suitable:
+            assert False, error_message
 
     backup_mode = BackupMode.MODIFY_ORIGINAL
 
@@ -360,29 +428,8 @@ def set_movie_track_languages(movie_file_path, languages):
     command.append('-map')
     command.append('0')
 
-
-    for track_index in range(len(languages)):
-        # track_id = sorted_track_ids[track_index]
-        if get_movie_container_type(src_movie_file_path) == MovieContainerType.AVI:
-            # print('avi')
-            # find a way to set riff IAS1 to the language
-            # https://superuser.com/questions/783895/ffmpeg-edit-avi-metadata-and-audio-track-naming
-            #     Took quite a long time for me to figure this out. I'm posting it here, because even after 3 years this thread is one of the first hits in google search: AVI (more specific: RIFF) does support language names but in opposite to mkv, the metadata is not stored in the stream but in the header using tags IAS1-9 for up to 9 different audio streams.
-            #  
-            #     ffmpeg -i input.avi -map 0 -codec copy -metadata IAS1=eng -metadata IAS2=ger output.avi
-            #
-            #     VLC ist pretty tolerant. If you enter ISO code "ger", VLC translates it to "Deutsch", if you enter "MyLang" instead, VLC displays "MyLang". Other software like Kodi needs the the correct ISO code. It would read "MyL" only and then display the language as unknown.
-            #
-            #     However, please be aware that ffmpeg does not just add the language but also changes other metadata. For example, audio interleave and preload data are different in output.avi, no idea if this is good or might result in audio out of sync. Check with MediaInfo or similar.
-
-
-            # https://exiftool.org/TagNames/RIFF.html
-            command.append('-metadata')
-            command.append('IAS%d=%s' % (track_index + 1, languages[track_index].name))
-        else:
-            # print('not avi')
-            command.append('-metadata:s:a:%s' % track_index)
-            command.append('language=%s' % languages[track_index].iso)
+    for modifier in modifiers:
+        command += modifier.get_ffmpeg_options(movie_file_path)
 
     command.append(dst_movie_file_path.expanduser())
 
@@ -392,8 +439,11 @@ def set_movie_track_languages(movie_file_path, languages):
 
     check_result = True
     if check_result:
-        dst_audio_track_languages = get_movie_track_languages(dst_movie_file_path)
-        assert [l.iso for l in languages] == [l.iso for l in dst_audio_track_languages], '%s <> %s' % (str(languages), str(dst_audio_track_languages))
+        for modifier in modifiers:
+            modification_succeeded, error_message = modifier.check_modified_movie(dst_movie_file_path)
+            if not modification_succeeded:
+                assert False, error_message
+
 
         src_file_size = src_movie_file_path.stat().st_size
         dst_file_size = dst_movie_file_path.stat().st_size
@@ -443,7 +493,8 @@ if __name__ == '__main__':
                 raise
 
     if namespace.command == 'set-audio-language':
-        set_movie_track_languages(Path(namespace.movie_file_path), [Language(language_iso=language_iso) for language_iso in namespace.languages ])
+        tracks_language_modifier = TracksLanguageModifier([Language(language_iso=language_iso) for language_iso in namespace.languages ])
+        modify_movie_metadata(Path(namespace.movie_file_path), modifiers=[tracks_language_modifier])
 
     if namespace.command == 'fix-undefined-audio-languages':
         for movie_file_path in namespace.movie_file_path:
@@ -463,5 +514,6 @@ if __name__ == '__main__':
                 new_audio_track_languages.append(Language(language_iso=chosen_language_iso))
             # print(old_audio_track_languages, new_audio_track_languages)
             if [l.iso for l in old_audio_track_languages] != [l.iso for l in new_audio_track_languages]:
-                set_movie_track_languages(Path(movie_file_path), new_audio_track_languages)
+                tracks_language_modifier = TracksLanguageModifier(new_audio_track_languages)
+                modify_movie_metadata(Path(movie_file_path), [tracks_language_modifier])
                 print("%saudio track languages set to %s%s" % (GREEN, new_audio_track_languages, RESET))
