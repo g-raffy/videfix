@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 import datetime
 import configparser
+import readline
 
 RED   = "\033[1;31m"  
 BLUE  = "\033[1;34m"
@@ -128,7 +129,7 @@ def execute_command(command):
     :param list(str) command:
     :rtype int,str,str: 
     """
-    print('"'+'" "'.join([str(e) for e in command])+'"')
+    # print('"'+'" "'.join([str(e) for e in command])+'"')
     completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
@@ -249,6 +250,27 @@ def _find_audio_tracks_defs(ffprobe_stderr):
 
     return stream_language_defs
 
+def get_movie_title(movie_file_path):
+    """
+    :param Path movie_file_path:
+    :rtype str:
+    """
+    assert isinstance(movie_file_path, Path)
+    title = ''
+    completed_process = execute_command(['ffprobe', movie_file_path.expanduser()])
+    assert completed_process.returncode == 0, completed_process.stderr
+    ffprobe_stderr = completed_process.stderr
+    for line in ffprobe_stderr.split(b'\n'):
+        try:
+            line_as_str = str(line, encoding='utf-8')
+        except UnicodeDecodeError as e:  # pylint: disable=unused-variable
+            line_as_str = str(line, encoding='latin_1')
+        match = re.match(r'^\s*title\s+: (.+)$', line_as_str)
+        if match:
+            title = match.groups()[0]
+    return title
+
+
 def get_movie_track_languages(movie_file_path):
     """
     :param Path movie_file_path:
@@ -293,7 +315,7 @@ def create_backup(file_path):
     now_date = datetime.datetime.now()
     backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
     # backup_file_path = Path('/tmp/' + file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
-    print(backup_file_path)
+    # print(backup_file_path)
     completed_process = execute_command(['rsync', '-va', str(file_path.expanduser()), str(backup_file_path.expanduser())])
     assert completed_process.returncode == 0, completed_process.stderr
 
@@ -389,6 +411,25 @@ class TracksLanguageModifier(IMetadataModifier):
             return False, '%s <> %s' % (str(self.languages), str(dst_audio_track_languages))
         return True, ""
 
+class TitleModifier(IMetadataModifier):
+
+    def __init__(self, new_title):
+        """
+        :param str new_title:
+        """
+        self.new_title = new_title
+
+    def movie_is_suitable(self, src_movie_file_path):
+        return True, ""
+
+    def get_ffmpeg_options(self, src_movie_file_path):
+        ffmpeg_options = []
+        ffmpeg_options.append('-metadata')
+        ffmpeg_options.append('title=%s' % self.new_title)
+        return ffmpeg_options
+
+    def check_modified_movie(self, dst_movie_file_path):
+        return True, ""
 
 def modify_movie_metadata(movie_file_path, modifiers):
     """
@@ -463,6 +504,14 @@ def fix_movie_file(movie_file_path):
     languages = get_movie_track_languages(movie_file_path)
     print(languages)
 
+_input = input
+def input(prompt, initial=''):
+    readline.set_startup_hook(lambda: readline.insert_text(initial))
+    try:
+        return _input(prompt)
+    finally:
+        readline.set_startup_hook(None)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='edit metadata inside movie files')
     subparsers = parser.add_subparsers()
@@ -476,8 +525,10 @@ if __name__ == '__main__':
     set_audio_language_subparser.add_argument('--languages', required=True, choices=LANGUAGE_DEFS.isos(), nargs='+')
     set_audio_language_subparser.add_argument('--movie-file-path', required=True)
 
-    show_audio_language_subparser = subparsers.add_parser("fix-undefined-audio-languages", help="allows the user to interactively define the undefined language of audiotracks")
-    show_audio_language_subparser.add_argument('movie_file_path', nargs='+')
+    show_audio_language_subparser = subparsers.add_parser("modify-metadata", help="allows the user to interactively modify metadata")
+    show_audio_language_subparser.add_argument('-l', '--fix-undefined-audio-languages', required=False, action='store_true', help="define the undefined language of audiotracks")
+    show_audio_language_subparser.add_argument('-t', '--fix-title', required=False, action='store_true', help="define the title")
+    show_audio_language_subparser.add_argument('-m', '--movie-file-path', required=True, nargs='+')
 
     namespace = parser.parse_args()
     # print(namespace)
@@ -496,24 +547,38 @@ if __name__ == '__main__':
         tracks_language_modifier = TracksLanguageModifier([Language(language_iso=language_iso) for language_iso in namespace.languages ])
         modify_movie_metadata(Path(namespace.movie_file_path), modifiers=[tracks_language_modifier])
 
-    if namespace.command == 'fix-undefined-audio-languages':
+    if namespace.command == 'modify-metadata':
+        print(namespace)
         for movie_file_path in namespace.movie_file_path:
-            old_audio_track_languages = get_movie_track_languages(Path(movie_file_path))
-            print("%s%s (%s)%s :" % (BLUE, movie_file_path, old_audio_track_languages, RESET))
-            new_audio_track_languages = []
-            for track_index in range(len(old_audio_track_languages)):
-                chosen_language_iso = old_audio_track_languages[track_index].iso
-                if old_audio_track_languages[track_index].iso == "und":
-                    while True:
-                        print("Choose a language for the undefined audiotrack #%d : " % track_index, end='', flush=True)
-                        chosen_language_iso = sys.stdin.readline().rstrip()
-                        if chosen_language_iso in Language.isos():
-                            break
-                        else:
-                            print(RED, "unexpected language %s : valid values are %s" % (chosen_language_iso, Language.isos()), RESET)
-                new_audio_track_languages.append(Language(language_iso=chosen_language_iso))
-            # print(old_audio_track_languages, new_audio_track_languages)
-            if [l.iso for l in old_audio_track_languages] != [l.iso for l in new_audio_track_languages]:
-                tracks_language_modifier = TracksLanguageModifier(new_audio_track_languages)
-                modify_movie_metadata(Path(movie_file_path), [tracks_language_modifier])
-                print("%saudio track languages set to %s%s" % (GREEN, new_audio_track_languages, RESET))
+            print("%s%s%s :" % (BLUE, movie_file_path, RESET))
+            metadata_modifiers = []
+            if namespace.fix_undefined_audio_languages:
+                old_audio_track_languages = get_movie_track_languages(Path(movie_file_path))
+                print("Current track languages : %s" % (old_audio_track_languages))
+                new_audio_track_languages = []
+                for track_index in range(len(old_audio_track_languages)):
+                    chosen_language_iso = old_audio_track_languages[track_index].iso
+                    if old_audio_track_languages[track_index].iso == "und":
+                        while True:
+                            print("Choose a language for the undefined audiotrack #%d : " % track_index, end='', flush=True)
+                            chosen_language_iso = sys.stdin.readline().rstrip()
+                            if chosen_language_iso in Language.isos():
+                                break
+                            else:
+                                print(RED, "unexpected language %s : valid values are %s" % (chosen_language_iso, Language.isos()), RESET)
+                    new_audio_track_languages.append(Language(language_iso=chosen_language_iso))
+                # print(old_audio_track_languages, new_audio_track_languages)
+                if [l.iso for l in old_audio_track_languages] != [l.iso for l in new_audio_track_languages]:
+                    tracks_language_modifier = TracksLanguageModifier(new_audio_track_languages)
+                    print("%ssetting audio track languages to %s%s" % (GREEN, new_audio_track_languages, RESET))
+                    metadata_modifiers.append(tracks_language_modifier)
+            if namespace.fix_title:
+                old_title = get_movie_title(Path(movie_file_path))
+                # print("Choose a title (old title : %s%s%s) : " % (CYAN, old_title, RESET), end='', flush=True)
+                # chosen_title = sys.stdin.readline().rstrip()
+                new_title = input("Choose a title : ", old_title)
+                if new_title != old_title:
+                    print("%schanging title from '%s' to '%s'%s" % (GREEN, old_title, new_title, RESET))
+                    metadata_modifiers.append(TitleModifier(new_title))
+            if len(metadata_modifiers) != 0:
+                modify_movie_metadata(Path(movie_file_path), metadata_modifiers)
