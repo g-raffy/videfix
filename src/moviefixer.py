@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # # utf-8
+import sys
 import subprocess
 import re
 from enum import Enum, auto
@@ -126,7 +127,7 @@ def execute_command(command):
     :param list(str) command:
     :rtype int,str,str: 
     """
-    print('"'+'" "'.join([str(e) for e in command])+'"')
+    # print('"'+'" "'.join([str(e) for e in command])+'"')
     completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #print(completed_process.stdout)
     #print(type(completed_process.stdout))
@@ -290,7 +291,7 @@ def create_backup(file_path):
     assert isinstance(file_path, Path)
     now_date = datetime.datetime.now()
     backup_file_path = file_path.with_name(file_path.stem + '.asof_' + now_date.strftime("%Y_%m_%d_%H_%M_%S")  + file_path.suffix)
-    print(backup_file_path)
+    # print(backup_file_path)
     completed_process = execute_command(['rsync', '-va', str(file_path.expanduser()), str(backup_file_path.expanduser())])
     assert completed_process.returncode == 0, completed_process.stderr
 
@@ -309,7 +310,7 @@ def set_movie_track_languages(movie_file_path, languages):
     assert isinstance(movie_file_path, Path)
 
     audio_track_languages = get_movie_track_languages(movie_file_path)
-    print("existing track defs: ", audio_track_languages)
+    # print("existing track defs: ", audio_track_languages)
     assert len(audio_track_languages) == len(languages), "unexpected number of languages in %s (%d languages are expected) " % (str(languages), len(audio_track_languages))
 
     backup_mode = BackupMode.MODIFY_BACKUP
@@ -342,7 +343,7 @@ def set_movie_track_languages(movie_file_path, languages):
     for track_index in range(len(languages)):
         # track_id = sorted_track_ids[track_index]
         if get_movie_container_type(src_movie_file_path) == MovieContainerType.AVI:
-            print('avi')
+            # print('avi')
             # find a way to set riff IAS1 to the language
             # https://superuser.com/questions/783895/ffmpeg-edit-avi-metadata-and-audio-track-naming
             #     Took quite a long time for me to figure this out. I'm posting it here, because even after 3 years this thread is one of the first hits in google search: AVI (more specific: RIFF) does support language names but in opposite to mkv, the metadata is not stored in the stream but in the header using tags IAS1-9 for up to 9 different audio streams.
@@ -358,7 +359,7 @@ def set_movie_track_languages(movie_file_path, languages):
             command.append('-metadata')
             command.append('IAS%d=%s' % (track_index + 1, languages[track_index].name))
         else:
-            print('not avi')
+            # print('not avi')
             command.append('-metadata:s:a:%s' % track_index)
             command.append('language=%s' % languages[track_index].iso)
 
@@ -375,7 +376,7 @@ def set_movie_track_languages(movie_file_path, languages):
 
         src_file_size = src_movie_file_path.stat().st_size
         dst_file_size = dst_movie_file_path.stat().st_size
-        print(src_file_size, dst_file_size)
+        # print(src_file_size, dst_file_size)
         assert 0.99 < float(dst_file_size)/float(src_file_size) < 1.02
         # assert abs(src_file_size - dst_file_size) < 1000
 
@@ -397,6 +398,9 @@ if __name__ == '__main__':
     set_audio_language_subparser.add_argument('--languages', required=True, choices=LANGUAGE_DEFS.isos(), nargs='+')
     set_audio_language_subparser.add_argument('--movie-file-path', required=True)
 
+    show_audio_language_subparser = subparsers.add_parser("fix-undefined-audio-languages", help="allows the user to interactively define the undefined language of audiotracks")
+    show_audio_language_subparser.add_argument('movie_file_path', nargs='+')
+
     namespace = parser.parse_args()
     # print(namespace)
 
@@ -413,3 +417,23 @@ if __name__ == '__main__':
     if namespace.command == 'set-audio-language':
         set_movie_track_languages(Path(namespace.movie_file_path), [Language(language_iso=language_iso) for language_iso in namespace.languages ])
 
+    if namespace.command == 'fix-undefined-audio-languages':
+        for movie_file_path in namespace.movie_file_path:
+            old_audio_track_languages = get_movie_track_languages(Path(movie_file_path))
+            print("%s%s (%s)%s :" % (BLUE, movie_file_path, old_audio_track_languages, RESET))
+            new_audio_track_languages = []
+            for track_index in range(len(old_audio_track_languages)):
+                chosen_language_iso = old_audio_track_languages[track_index].iso
+                if old_audio_track_languages[track_index].iso == "und":
+                    while True:
+                        print("Choose a language for the undefined audiotrack #%d : " % track_index, end='', flush=True)
+                        chosen_language_iso = sys.stdin.readline().rstrip()
+                        if chosen_language_iso in Language.isos():
+                            break
+                        else:
+                            print(RED, "unexpected language %s : valid values are %s" % (chosen_language_iso, Language.isos()), RESET)
+                new_audio_track_languages.append(Language(language_iso=chosen_language_iso))
+            # print(old_audio_track_languages, new_audio_track_languages)
+            if [l.iso for l in old_audio_track_languages] != [l.iso for l in new_audio_track_languages]:
+                set_movie_track_languages(Path(movie_file_path), new_audio_track_languages)
+                print("%saudio track languages set to %s%s" % (GREEN, new_audio_track_languages, RESET))
