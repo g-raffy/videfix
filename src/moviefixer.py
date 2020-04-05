@@ -250,6 +250,8 @@ def _find_audio_tracks_defs(ffprobe_stderr):
 
     return stream_language_defs
 
+
+
 def get_movie_title(movie_file_path):
     """
     :param Path movie_file_path:
@@ -269,7 +271,6 @@ def get_movie_title(movie_file_path):
         if match:
             title = match.groups()[0]
     return title
-
 
 def get_movie_track_languages(movie_file_path):
     """
@@ -411,6 +412,32 @@ class TracksLanguageModifier(IMetadataModifier):
             return False, '%s <> %s' % (str(self.languages), str(dst_audio_track_languages))
         return True, ""
 
+
+class ITitleGuesser(abc.ABC):
+
+    @abc.abstractmethod
+    def guess_title(self, file_path):
+        pass
+
+
+class TitleFromFileName(ITitleGuesser):
+
+    def __init__(self, filename_reg_exp=r'^(?P<year>[0-9]+) - (?P<title>[^\[.]+)'):
+        """
+        :param str filename_reg_exp: python style regular expression with in which it is expected to find a group named title. This group named 'title' is used to find the title of the movie in the file's name
+        """
+        assert re.search(r'\?P<title>', filename_reg_exp), "regular expression %s is expected to have a group named 'title'" % (filename_reg_exp)
+        self.filename_reg_exp = filename_reg_exp
+
+    def guess_title(self, file_path):
+        title = None
+        print(file_path.stem)
+        match = re.match(self.filename_reg_exp, file_path.stem)
+        if match:
+            if 'title' in match.groupdict():
+                title = match.groupdict()['title']
+        return title
+
 class TitleModifier(IMetadataModifier):
 
     def __init__(self, new_title):
@@ -525,11 +552,11 @@ if __name__ == '__main__':
     set_audio_language_subparser.add_argument('--languages', required=True, choices=LANGUAGE_DEFS.isos(), nargs='+')
     set_audio_language_subparser.add_argument('--movie-file-path', required=True)
 
-    show_audio_language_subparser = subparsers.add_parser("modify-metadata", help="allows the user to interactively modify metadata")
-    show_audio_language_subparser.add_argument('-l', '--fix-undefined-audio-languages', required=False, action='store_true', help="define the undefined language of audiotracks")
-    show_audio_language_subparser.add_argument('-t', '--fix-title', required=False, action='store_true', help="define the title")
-    show_audio_language_subparser.add_argument('-m', '--movie-file-path', required=True, nargs='+')
-
+    modify_metadata_subparser = subparsers.add_parser("modify-metadata", help="allows the user to interactively modify metadata")
+    modify_metadata_subparser.add_argument('-l', '--fix-undefined-audio-languages', required=False, action='store_true', help="define the undefined language of audiotracks")
+    modify_metadata_subparser.add_argument('-t', '--fix-title', required=False, action='store_true', help="define the title")
+    modify_metadata_subparser.add_argument('-m', '--movie-file-path', required=True, nargs='+')
+    modify_metadata_subparser.add_argument('-g', '--add-title-guesser', required=False, action='append', dest='title_guessers', help="add a title guesser which guesses the title from the filename obeying the given regular expression")
     namespace = parser.parse_args()
     # print(namespace)
 
@@ -549,6 +576,17 @@ if __name__ == '__main__':
 
     if namespace.command == 'modify-metadata':
         print(namespace)
+        title_guessers = []
+        for title_guesser_arg_value in namespace.title_guessers:
+            match = re.match('^(?P<type>[a-z_]+):(?P<arg>.*)$', title_guesser_arg_value)
+            if not match:
+                match = re.match('^(?P<type>[a-z_]+)$', title_guesser_arg_value)
+            assert match, "bad argument value for title guesser '%s' : it is expecte to be of the form <guesser_type>:<guesser_args>" % title_guesser_arg_value
+            if match['type'] == 'filename_re':
+                filename_re = match['arg']
+                title_guessers.append(TitleFromFileName(filename_re))
+            else:
+                assert False, "unexpected title guesser type : %s" % match['type']
         for movie_file_path in namespace.movie_file_path:
             print("%s%s%s :" % (BLUE, movie_file_path, RESET))
             metadata_modifiers = []
@@ -574,9 +612,16 @@ if __name__ == '__main__':
                     metadata_modifiers.append(tracks_language_modifier)
             if namespace.fix_title:
                 old_title = get_movie_title(Path(movie_file_path))
+                guessed_title = None
+                for title_guesser in title_guessers:
+                    guessed_title = title_guesser.guess_title(Path(movie_file_path))
+                    if guessed_title != None:
+                        break
+                if guessed_title == None:
+                    guessed_title = old_title
                 # print("Choose a title (old title : %s%s%s) : " % (CYAN, old_title, RESET), end='', flush=True)
                 # chosen_title = sys.stdin.readline().rstrip()
-                new_title = input("Choose a title : ", old_title)
+                new_title = input("Choose a title (old title : %s'%s'%s) : " % (BOLD, old_title, RESET), guessed_title)
                 if new_title != old_title:
                     print("%schanging title from '%s' to '%s'%s" % (GREEN, old_title, new_title, RESET))
                     metadata_modifiers.append(TitleModifier(new_title))
